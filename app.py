@@ -5,14 +5,27 @@ from aiohttp import web
 from sqlalchemy.exc import NoResultFound, MultipleResultsFound
 
 import config
-import crud
 import db
 import models
 import views
+from crud import Crud
 from errors import HttpError
 
 
-# noinspection PyUnusedLocal
+# noinspection PyUnusedLocal,PyShadowingNames
+async def orm_context(app: web.Application):
+    await db.create_tables(models.BaseModel)
+    yield
+    await db.close()
+
+
+@web.middleware
+async def crud_middleware(request: web.Request, handler: Callable):
+    """Adds a CRUD manager to the request."""
+    async with db.SessionMaker() as session:
+        request['crud'] = Crud(session)
+        return await handler(request)
+
 @web.middleware
 async def user_middleware(request: web.Request, handler: Callable):
     """Authorizes a request by parsing authorization JWT."""
@@ -23,7 +36,7 @@ async def user_middleware(request: web.Request, handler: Callable):
         try:
             data = jwt.decode(token, key=config.SECRET_KEY, algorithms=['HS256'])
             if 'uid' in data:
-                user = await crud.get(models.User, data['uid'])
+                user = await request['crud'].get(models.User, data['uid'])
         except (jwt.PyJWTError, NoResultFound, MultipleResultsFound):
             pass
     request['user'] = user
@@ -43,19 +56,22 @@ async def error_middleware(request: web.Request, handler: Callable):
         return response
 
 
-# noinspection PyUnusedLocal,PyShadowingNames
-async def close_database(app):
-    await db.close()
-
-
-app = web.Application(middlewares=[user_middleware, error_middleware])
-app.on_cleanup.append(close_database)
+app = web.Application(middlewares=[
+    crud_middleware,
+    user_middleware,
+    error_middleware
+])
+app.cleanup_ctx.append(orm_context)
 
 app.add_routes([
     web.post('/api/v1/register', views.register),
     web.post('/api/v1/login', views.login),
-    web.post('/api/v1/advertisements', views.post_advertisement),
-    web.get('/api/v1/advertisements/{id:\\d+}', views.get_advertisement),
-    web.patch('/api/v1/advertisements/{id:\\d+}', views.patch_advertisement),
-    web.delete('/api/v1/advertisements/{id:\\d+}', views.delete_advertisement),
+    web.post('/api/v1/advertisements', views.AdvertisementView),
+    web.get(r'/api/v1/advertisements/{id:\d+}', views.AdvertisementView),
+    web.patch(r'/api/v1/advertisements/{id:\d+}', views.AdvertisementView),
+    web.delete(r'/api/v1/advertisements/{id:\d+}', views.AdvertisementView),
 ])
+
+
+if __name__ == '__main__':
+    web.run_app(app)

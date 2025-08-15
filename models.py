@@ -2,12 +2,11 @@ from datetime import datetime
 from typing import List
 
 from sqlalchemy import String, DateTime, ForeignKey
+from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-import db
 
-
-class BaseModel(DeclarativeBase):
+class BaseModel(DeclarativeBase, AsyncAttrs):
     id: Mapped[int] = mapped_column(primary_key=True)
 
     def __eq__(self, other):
@@ -71,10 +70,3 @@ class Advertisement(BaseModel):
             'created': self.created.isoformat(),
             'owner': self.owner.dict(),
         }
-
-
-async def prepare_database(drop=False):
-    async with db.engine.begin() as conn:
-        if drop:
-            await conn.run_sync(BaseModel.metadata.drop_all)
-        await conn.run_sync(BaseModel.metadata.create_all)

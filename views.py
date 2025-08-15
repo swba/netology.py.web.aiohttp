@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from werkzeug.security import generate_password_hash, check_password_hash
 
 import config
-import crud
+from crud import Crud
 from errors import HttpError
 from models import Advertisement, User
 from validation import (
@@ -24,7 +24,7 @@ async def register(request: web.Request):
     data['password'] = generate_password_hash(data['password'], salt_length=8)
     user = User(**data)
     try:
-        await crud.save(user)
+        await request['crud'].save(user)
     except IntegrityError:
         raise HttpError(409, f"User already exists")
     return web.json_response({'id': user.id})
@@ -35,10 +35,10 @@ async def login(request: web.Request):
     user: User | None = None
     # Try to find user first by username and then by email.
     if 'username' in data:
-        if not (user := await crud.get(User, data['username'], 'username')):
+        if not (user := await request['crud'].get(User, data['username'], 'username')):
             raise HttpError(404, f"User with username={data['username']} not found")
     elif 'email' in data:
-        if not (user := await crud.get(User, data['email'], 'email')):
+        if not (user := await request['crud'].get(User, data['email'], 'email')):
             raise HttpError(404, f"User with email={data['email']} not found")
     if not check_password_hash(str(user.password), data['password']):
         raise HttpError(401, "Invalid password")
@@ -54,58 +54,65 @@ async def login(request: web.Request):
     return web.json_response({'token': token})
 
 
-async def get_advertisement(request: web.Request):
-    ad = await _load_advertisement(request)
-    return web.json_response(ad.dict())
+class AdvertisementView(web.View):
 
-async def post_advertisement(request: web.Request):
-    _check_logged_in(request)
+    @property
+    def crud(self) -> Crud:
+        return self.request['crud']
 
-    json_data = await request.json()
-    data = validate_data(json_data, AdvertisementValidator)
+    async def get(self):
+        ad = await self._load()
+        return web.json_response(ad.dict())
 
-    ad = Advertisement(**data, owner=request['user'])
-    await crud.save(ad)
+    async def post(self):
+        _check_logged_in(self.request)
 
-    return web.json_response(ad.dict())
+        json_data = await self.request.json()
+        data = validate_data(json_data, AdvertisementValidator)
 
-async def patch_advertisement(request: web.Request):
-    _check_logged_in(request)
+        ad = Advertisement(**data, owner=self.request['user'])
+        await self.crud.save(ad)
 
-    ad = await _load_advertisement(request)
-    _check_advertisement_owner(request, ad)
+        return web.json_response(ad.dict())
 
-    json_data = await request.json()
-    data = validate_data(json_data, AdvertisementUpdateValidator)
+    async def patch(self):
+        _check_logged_in(self.request)
 
-    # Update advertisement.
-    for k, v in data.items():
-        setattr(ad, k, v)
-    await crud.save(ad)
+        ad = await self._load()
+        self._check_owner(ad)
 
-    return web.json_response(ad.dict())
+        json_data = await self.request.json()
+        data = validate_data(json_data, AdvertisementUpdateValidator)
 
-async def delete_advertisement(request: web.Request):
-    _check_logged_in(request)
+        # Update advertisement.
+        for k, v in data.items():
+            setattr(ad, k, v)
+        await self.crud.save(ad)
 
-    ad = await _load_advertisement(request)
-    _check_advertisement_owner(request, ad)
+        return web.json_response(ad.dict())
 
-    await crud.delete(ad)
-    return web.json_response({
-        'message': "Advertisement deleted successfully"
-    })
+    async def delete(self):
+        _check_logged_in(self.request)
 
-async def _load_advertisement(request: web.Request) -> Advertisement:
-    advertisement_id: int = int(request.match_info['id'])
-    advertisement = await crud.get(Advertisement, advertisement_id)
-    if not advertisement:
-        raise HttpError(404, f"Advertisement with id={advertisement_id} not found")
-    return advertisement
+        ad = await self._load()
+        self._check_owner(ad)
 
-def _check_advertisement_owner(request: web.Request, advertisement: Advertisement):
-    if advertisement.owner != request['user']:
-        raise HttpError(403, "Only advertisement owner can edit or delete it")
+        await self.crud.delete(ad)
+        return web.json_response({
+            'message': "Advertisement deleted successfully"
+        })
+
+    async def _load(self) -> Advertisement:
+        advertisement_id: int = int(self.request.match_info['id'])
+        advertisement = await self.crud.get(Advertisement, advertisement_id)
+        if not advertisement:
+            raise HttpError(404, f"Advertisement with id={advertisement_id} not found")
+        return advertisement
+
+    def _check_owner(self, advertisement: Advertisement):
+        if advertisement.owner != self.request['user']:
+            raise HttpError(403, "Only advertisement owner can edit or delete it")
+
 
 def _check_logged_in(request: web.Request):
     if not request['user']:

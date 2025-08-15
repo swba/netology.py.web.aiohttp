@@ -1,31 +1,36 @@
 from typing import TypeVar
 
 from sqlalchemy import select, ColumnElement
-from sqlalchemy.exc import NoResultFound
+from sqlalchemy.exc import NoResultFound, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import db
 from models import BaseModel
 
 T = TypeVar('T', bound=BaseModel)
 
 
-async def get(model_cls: type[T], value: int, key: str = 'id') -> T | None:
-    field: ColumnElement = getattr(model_cls, key)
-    stmt = select(model_cls).where(field == value)
-    async with db.SessionMaker() as session: # type: AsyncSession
-        result = await session.execute(stmt)
+class Crud:
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get(self, model_cls: type[T], value: int, key: str = 'id') -> T | None:
+        field: ColumnElement = getattr(model_cls, key)
+        stmt = select(model_cls).where(field == value)
         try:
+            result = await self.session.execute(stmt)
             return result.scalars().one()
         except NoResultFound:
             return None
 
-async def save(instance: T):
-    async with db.SessionMaker() as session: # type: AsyncSession
-        async with session.begin():
-            session.add(instance)
+    async def save(self, instance: T):
+        try:
+            self.session.add(instance)
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            raise
 
-async def delete(instance: T):
-    async with db.SessionMaker() as session: # type: AsyncSession
-        await session.delete(instance)
-        await session.commit()
+    async def delete(self, instance: T):
+        await self.session.delete(instance)
+        await self.session.commit()
